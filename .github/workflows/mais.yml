@@ -1,0 +1,98 @@
+name: Memory Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+
+  test-memory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      - name: Install file command
+        run: sudo apt-get install file
+
+      - name: Check JPEG files
+        run: |
+          for img in $(find . -name "*.jpg"); do
+            file "$img";
+          done
+
+
+  build-memory:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Build Docker image
+        run: docker build -t antimepix/memory:latest .
+
+      - name: Save Docker image to file
+        run: docker save antimepix/memory:latest -o memory_image.tar
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v3
+        with:
+          name: memory_image
+          path: memory_image.tar
+
+  push-memory:
+    needs: build-memory
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v3
+        with:
+          name: memory_image
+
+      - name: Load Docker image
+        run: docker load -i memory_image.tar
+
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "antimepix" --password-stdin
+
+      - name: Tag Docker image
+        run: docker tag antimepix/memory:latest antimepix/memory:latest
+
+      - name: Push Docker image
+        run: docker push antimepix/memory:latest
+
+
+
+    deploy-memory:
+    needs: push-memory
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: SSH into server and deploy using Docker Compose
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no "$SSH_USERNAME@$SSH_HOST" << 'EOF'
+            mkdir -p ~/memory-app
+            cd ~/memory-app
+
+            cat << 'EOC' > docker-compose.yml
+            version: '3.8'
+
+            services:
+              memory-app:
+                image: antimepix/memory:latest
+                ports:
+                  - "80:80"
+                restart: unless-stopped
+            EOC
+
+            docker-compose pull
+            
+            docker-compose up -d
+          EOF
